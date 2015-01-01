@@ -18,7 +18,7 @@
 package org.apache.spark.util
 
 import java.lang.management.ManagementFactory
-import java.lang.reflect.{Array => JArray}
+import org.apache.spark.util.{Array => JArray}
 import java.lang.reflect.Field
 import java.lang.reflect.Modifier
 import java.util.IdentityHashMap
