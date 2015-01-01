@@ -1,4 +1,4 @@
-package org.apache.spark.util
+package org.apache.spark.util;
 
 public class Array { 
     /* 
