@@ -187,24 +187,24 @@ public class ArrayReflect {
         if (array instanceof double[]) ((double[])array)[index] = d; else 
         throw badArray(array); 
     } 
-     
-     
-    public static void set(Object array, int index, Object value) { 
-        if (array instanceof Object[]) { 
-            try { 
-                ((Object[])array)[index] = value; 
-            } catch (ArrayStoreException e) { 
-                throw badArray(array); 
-            } 
-        } else 
-        if (value instanceof Boolean) setBoolean(array, index, (boolean)value); else 
-        if (value instanceof Byte) setByte(array, index, (byte)value); else 
-        if (value instanceof Short) setShort(array, index, (short)value); else 
-        if (value instanceof Character) setChar(array, index, (char)value); else 
-        if (value instanceof Integer) setInt(array, index, (int)value); else 
-        if (value instanceof Long) setLong(array, index, (long)value); else 
-        if (value instanceof Float) setFloat(array, index, (float)value); else 
-        if (value instanceof Double) setDouble(array, index, (double)value); else 
-        throw badArray(array); 
-    } 
+
+    public static void set(Object array, int index, Object value) {
+        if (array instanceof Object[]) {
+            try {
+                ((Object[])array)[index] = value;
+            } catch (ArrayStoreException e) {
+                throw badArray(array);
+            }
+        } else
+        if (value instanceof Boolean) setBoolean(array, index, ((Boolean)value).booleanValue()); else
+        if (value instanceof Byte) setByte(array, index, ((Byte)value).byteValue()); else
+        if (value instanceof Short) setShort(array, index, ((Short)value).shortValue()); else
+        if (value instanceof Character) setChar(array, index, ((Character)value).charValue()); else
+        if (value instanceof Integer) setInt(array, index, ((Integer)value).intValue()); else
+        if (value instanceof Long) setLong(array, index, ((Long)value).longValue()); else
+        if (value instanceof Float) setFloat(array, index, ((Float)value).floatValue()); else
+        if (value instanceof Double) setDouble(array, index, ((Double)value).doubleValue()); else
+        throw badArray(array);
+    }
+
 } 
