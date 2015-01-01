@@ -1,6 +1,6 @@
 package org.apache.spark.util;
 
-public class Array { 
+public class ArrayReflect { 
     /* 
      * Legal conversions: 
      * From \ To| boolean | byte | char | short | int | long | float | double 
