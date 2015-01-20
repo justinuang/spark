@@ -233,14 +233,18 @@ class ExternalAppendOnlyMap[K, V, C](
     // Input streams are derived both from the in-memory map and spilled maps on disk
     // The in-memory map is sorted in place, while the spilled maps are already in sorted order
     private val sortedMap = currentMap.destructiveSortedIterator(keyComparator)
-    private val inputStreams = (Seq(sortedMap) ++ spilledMaps).map(it => it.buffered)
+    private val inputStreams = (spilledMaps ++ Seq(sortedMap)).map(it => it.buffered)
+
+    var streamIndex = 0
 
     inputStreams.foreach { it =>
       val kcPairs = new ArrayBuffer[(K, C)]
       readNextHashCode(it, kcPairs)
       if (kcPairs.length > 0) {
-        mergeHeap.enqueue(new StreamBuffer(it, kcPairs))
+        mergeHeap.enqueue(new StreamBuffer(it, kcPairs, streamIndex))
       }
+
+      streamIndex = streamIndex + 1
     }
 
     /**
@@ -352,7 +356,8 @@ class ExternalAppendOnlyMap[K, V, C](
      */
     private class StreamBuffer(
         val iterator: BufferedIterator[(K, C)],
-        val pairs: ArrayBuffer[(K, C)])
+        val pairs: ArrayBuffer[(K, C)],
+        val index: Int)
       extends Comparable[StreamBuffer] {
 
       def isEmpty = pairs.length == 0
@@ -365,7 +370,10 @@ class ExternalAppendOnlyMap[K, V, C](
 
       override def compareTo(other: StreamBuffer): Int = {
         // descending order because mutable.PriorityQueue dequeues the max, not the min
-        if (other.minKeyHash < minKeyHash) -1 else if (other.minKeyHash == minKeyHash) 0 else 1
+        if (other.minKeyHash < minKeyHash) -1
+        else if (other.minKeyHash == minKeyHash) (
+            if (index < other.index) 1 else if (index == other.index) 0 else -1)
+        else 1
       }
     }
   }
