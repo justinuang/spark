@@ -17,7 +17,11 @@
 
 package org.apache.spark.sql.execution
 
+import java.util.concurrent.Callable
 import java.util.{List => JList, Map => JMap}
+
+import com.google.common.cache.{CacheLoader, CacheBuilder, LoadingCache}
+import org.apache.spark.rdd.RDD
 
 import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
@@ -32,7 +36,9 @@ import org.apache.spark.sql.catalyst.plans.logical
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.types._
-import org.apache.spark.{Accumulator, Logging => SparkLogging}
+import org.apache.spark.{Logging => SparkLogging, Partition, TaskContext, Accumulator}
+
+import scala.reflect.ClassTag
 
 /**
  * A serialized version of a Python lambda function.  Suitable for use in a [[PythonRDD]].
@@ -223,9 +229,14 @@ case class BatchPythonEvaluation(udf: PythonUDF, output: Seq[Attribute], child: 
 
   def execute() = {
     // TODO: Clean up after ourselves?
-    val childResults = child.execute().map(_.copy()).cache()
+    val childResults = child.execute()
+    val childResultsWriter = new ForkingRDD[Row](childResults)
+    val childResultsReader = childResultsWriter.mapPartitions { iter =>
+      iter.asInstanceOf[JIteratorWrapper[Row]].underlying.
+        asInstanceOf[ForkingIterator[Row]].forkIterator()
+    }
 
-    val parent = childResults.mapPartitions { iter =>
+    val parent = childResultsWriter.mapPartitions { iter =>
       val pickle = new Pickler
       val currentRow = newMutableProjection(udf.children, child.output)()
       val fields = udf.children.map(_.dataType)
@@ -260,7 +271,7 @@ case class BatchPythonEvaluation(udf: PythonUDF, output: Seq[Attribute], child: 
       }
     }
 
-    childResults.zip(pyRDD).mapPartitions { iter =>
+    childResultsReader.zip(pyRDD).mapPartitions { iter =>
       val joinedRow = new JoinedRow()
       iter.map {
         case (row, udfResult) =>
@@ -268,4 +279,22 @@ case class BatchPythonEvaluation(udf: PythonUDF, output: Seq[Attribute], child: 
       }
     }
   }
+}
+
+private[spark] class ForkingRDD[T: ClassTag](prev: RDD[T])
+  extends RDD[T](prev) {
+
+  override val partitioner = firstParent[T].partitioner
+
+  override def getPartitions: Array[Partition] = firstParent[T].partitions
+
+  val loadingCache: com.google.common.cache.Cache[Partition, ForkingIterator[T]] =
+    CacheBuilder.newBuilder().build()
+
+  override def compute(split: Partition, context: TaskContext) =
+    loadingCache.get(split, new Callable[ForkingIterator[T]] {
+      def call(): ForkingIterator[T] = {
+        new ForkingIterator[T](firstParent[T].iterator(split, context), 3000)
+      }
+    })
 }

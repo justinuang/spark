@@ -238,6 +238,7 @@ private[spark] class PythonRDD(
         // Serialized command:
         dataOut.writeInt(command.length)
         dataOut.write(command)
+        dataOut.flush()
         // Data values
         PythonRDD.writeIteratorToStream(firstParent.iterator(split, context), dataOut)
         dataOut.writeInt(SpecialLengths.END_OF_DATA_SECTION)
@@ -391,16 +392,22 @@ private[spark] object PythonRDD extends Logging {
     def write(obj: Any): Unit = obj match {
       case null =>
         dataOut.writeInt(SpecialLengths.NULL)
+        dataOut.flush()
       case arr: Array[Byte] =>
         dataOut.writeInt(arr.length)
         dataOut.write(arr)
+        dataOut.flush()
       case str: String =>
         writeUTF(str, dataOut)
+        dataOut.flush()
       case stream: PortableDataStream =>
         write(stream.toArray())
+        dataOut.flush()
       case (key, value) =>
         write(key)
+        dataOut.flush()
         write(value)
+        dataOut.flush()
       case other =>
         throw new SparkException("Unexpected element type " + other.getClass)
     }

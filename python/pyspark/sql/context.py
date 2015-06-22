@@ -23,7 +23,7 @@ from py4j.protocol import Py4JError
 from py4j.java_collections import MapConverter
 
 from pyspark.rdd import RDD, _prepare_for_python_RDD
-from pyspark.serializers import AutoBatchedSerializer, PickleSerializer
+from pyspark.serializers import BatchedSerializer, PickleSerializer
 from pyspark.sql.types import Row, StringType, StructType, _verify_type, \
     _infer_schema, _has_nulltype, _merge_type, _create_converter, _python_to_sql_converter
 from pyspark.sql.dataframe import DataFrame
@@ -135,7 +135,7 @@ class SQLContext(object):
         [Row(c0=4)]
         """
         func = lambda _, it: imap(lambda x: f(*x), it)
-        ser = AutoBatchedSerializer(PickleSerializer())
+        ser = BatchedSerializer(PickleSerializer(), 10)
         command = (func, None, ser, ser)
         pickled_cmd, bvars, env, includes = _prepare_for_python_RDD(self._sc, command, self)
         self._ssql_ctx.udf().registerPython(name,

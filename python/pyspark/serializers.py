@@ -144,6 +144,8 @@ class FramedSerializer(Serializer):
         else:
             stream.write(serialized)
 
+        stream.flush()
+
     def _read_with_length(self, stream):
         length = read_int(stream)
         if length == SpecialLengths.END_OF_DATA_SECTION:
