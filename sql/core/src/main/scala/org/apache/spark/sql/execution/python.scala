@@ -20,43 +20,22 @@ package org.apache.spark.sql.execution
 import java.io.OutputStream
 import java.util.{List => JList, Map => JMap}
 
-import scala.collection.JavaConverters._
-
 import net.razorvine.pickle._
-
-import org.apache.spark.{Logging => SparkLogging, TaskContext, Accumulator}
-import org.apache.spark.api.python.{PythonRunner, PythonBroadcast, PythonRDD, SerDeUtil}
-import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.api.python.{PythonRDD, PythonRunner, SerDeUtil}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.{Row, DataFrame}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical
-import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.catalyst.plans.logical.{EvaluatePython, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.{MapData, GenericArrayData, ArrayBasedMapData, ArrayData}
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, ArrayData, GenericArrayData, MapData}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
+import org.apache.spark.{TaskContext}
 
-/**
- * A serialized version of a Python lambda function.  Suitable for use in a [[PythonRDD]].
- */
-private[spark] case class PythonUDF(
-    name: String,
-    command: Array[Byte],
-    envVars: JMap[String, String],
-    pythonIncludes: JList[String],
-    pythonExec: String,
-    pythonVer: String,
-    broadcastVars: JList[Broadcast[PythonBroadcast]],
-    accumulator: Accumulator[JList[Array[Byte]]],
-    dataType: DataType,
-    children: Seq[Expression]) extends Expression with Unevaluable with SparkLogging {
+import scala.collection.JavaConverters._
 
-  override def toString: String = s"PythonUDF#$name(${children.mkString(",")})"
-
-  override def nullable: Boolean = true
-}
 
 /**
  * Extracts PythonUDFs from operators, rewriting the query plan so that the UDF can be evaluated
@@ -79,7 +58,14 @@ private[spark] object ExtractPythonUDFs extends Rule[LogicalPlan] {
       } else {
         // Pick the UDF we are going to evaluate (TODO: Support evaluating multiple UDFs at a time)
         // If there is more than one, we will add another evaluation operator in a subsequent pass.
-        udfs.find(_.resolved) match {
+        udfs.find { udf =>
+          udf.resolved && udf.children.map { child: Expression =>
+            child.find {
+              case p: PythonUDF => true
+              case _ => false
+            }.isEmpty
+          }.reduce((x, y) => x && y)
+        } match {
           case Some(udf) =>
             var evaluation: EvaluatePython = null
 
@@ -89,7 +75,7 @@ private[spark] object ExtractPythonUDFs extends Rule[LogicalPlan] {
               // Other cases are disallowed as they are ambiguous or would require a cartesian
               // product.
               if (udf.references.subsetOf(child.outputSet)) {
-                evaluation = EvaluatePython(udf, child)
+                evaluation = EvaluatePythonUtils(udf, child)
                 evaluation
               } else if (udf.references.intersect(child.outputSet).nonEmpty) {
                 sys.error(s"Invalid PythonUDF $udf, requires attributes from more than one child.")
@@ -104,8 +90,10 @@ private[spark] object ExtractPythonUDFs extends Rule[LogicalPlan] {
             logical.Project(
               plan.output,
               plan.transformExpressions {
-                case p: PythonUDF if p.fastEquals(udf) => evaluation.resultAttribute
-              }.withNewChildren(newChildren))
+                case p: PythonUDF if p.fastEquals(udf) => evaluation.resultAttribute(0)
+              }.withNewChildren(newChildren)
+            )
+
 
           case None =>
             // If there is no Python UDF that is resolved, skip this round.
@@ -115,16 +103,16 @@ private[spark] object ExtractPythonUDFs extends Rule[LogicalPlan] {
   }
 }
 
-object EvaluatePython {
+object EvaluatePythonUtils {
   def apply(udf: PythonUDF, child: LogicalPlan): EvaluatePython =
-    new EvaluatePython(udf, child, AttributeReference("pythonUDF", udf.dataType)())
+    new EvaluatePython(Seq(udf), child, Seq(AttributeReference("pythonUDF", udf.dataType)()))
 
   def takeAndServe(df: DataFrame, n: Int): Int = {
     registerPicklers()
     df.withNewExecutionId {
       val iter = new SerDeUtil.AutoBatchedPickler(
         df.queryExecution.executedPlan.executeTake(n).iterator.map { row =>
-          EvaluatePython.toJava(row, df.schema)
+          EvaluatePythonUtils.toJava(row, df.schema)
         })
       PythonRDD.serveIterator(iter, s"serve-DataFrame")
     }
@@ -322,21 +310,6 @@ object EvaluatePython {
 }
 
 /**
- * Evaluates a [[PythonUDF]], appending the result to the end of the input tuple.
- */
-case class EvaluatePython(
-    udf: PythonUDF,
-    child: LogicalPlan,
-    resultAttribute: AttributeReference)
-  extends logical.UnaryNode {
-
-  def output: Seq[Attribute] = child.output :+ resultAttribute
-
-  // References should not include the produced attribute.
-  override def references: AttributeSet = udf.references
-}
-
-/**
  * Uses PythonRDD to evaluate a [[PythonUDF]], one partition of tuples at a time.
  *
  * Python evaluation works by sending the necessary (projected) input data via a socket to an
@@ -346,7 +319,7 @@ case class EvaluatePython(
  * we drain the queue to find the original input row. Note that if the Python process is way too
  * slow, this could lead to the queue growing unbounded and eventually run out of memory.
  */
-case class BatchPythonEvaluation(udf: PythonUDF, output: Seq[Attribute], child: SparkPlan)
+case class BatchPythonEvaluation(udfs: Seq[PythonUDF], output: Seq[Attribute], child: SparkPlan)
   extends SparkPlan {
 
   def children: Seq[SparkPlan] = child :: Nil
@@ -361,51 +334,72 @@ case class BatchPythonEvaluation(udf: PythonUDF, output: Seq[Attribute], child: 
     val reuseWorker = inputRDD.conf.getBoolean("spark.python.worker.reuse", defaultValue = true)
 
     inputRDD.mapPartitions { iter =>
-      EvaluatePython.registerPicklers()  // register pickler for Row
+      EvaluatePythonUtils.registerPicklers()  // register pickler for Row
 
       // The queue used to buffer input rows so we can drain it to
       // combine input with output from Python.
       val queue = new java.util.concurrent.ConcurrentLinkedQueue[InternalRow]()
 
       val pickle = new Pickler
-      val currentRow = newMutableProjection(udf.children, child.output)()
-      val fields = udf.children.map(_.dataType)
-      val schema = new StructType(fields.map(t => new StructField("", t, true)).toArray)
+
+      val test_func = (row: InternalRow) => {
+        val currentRows = udfs.map { udf =>
+          val currentRow = newMutableProjection(udf.children, child.output)()
+
+          currentRow(row)
+        }
+
+        val schemas = udfs.map { udf =>
+          val fields = udf.children.map(_.dataType)
+          val schema = new StructType(fields.map(t => new StructField("", t, true)).toArray)
+          schema
+        }
+
+        val outerSchema = StructType(schemas.map{  StructField("myColName", _)})
+
+        val out = EvaluatePythonUtils.toJava(InternalRow.fromSeq(currentRows), outerSchema)
+        out
+      }
 
       // Input iterator to Python: input rows are grouped so we send them in batches to Python.
       // For each row, add it to the queue.
       val inputIterator = iter.grouped(100).map { inputRows =>
         val toBePickled = inputRows.map { row =>
           queue.add(row)
-          EvaluatePython.toJava(currentRow(row), schema)
+          test_func(row) // TODO this is a list. fields are duplicated
         }.toArray
         pickle.dumps(toBePickled)
       }
 
       val context = TaskContext.get()
 
+      val firstUdf = udfs(0)
+
       // Output iterator for results from Python.
       val outputIterator = new PythonRunner(
-        udf.command,
-        udf.envVars,
-        udf.pythonIncludes,
-        udf.pythonExec,
-        udf.pythonVer,
-        udf.broadcastVars,
-        udf.accumulator,
+        udfs.map{_.command},
+        firstUdf.envVars,
+        firstUdf.pythonIncludes,
+        firstUdf.pythonExec,
+        firstUdf.pythonVer,
+        firstUdf.broadcastVars,
+        firstUdf.accumulator,
         bufferSize,
         reuseWorker
       ).compute(inputIterator, context.partitionId(), context)
 
       val unpickle = new Unpickler
-      val row = new GenericMutableRow(1)
       val joined = new JoinedRow
 
       outputIterator.flatMap { pickedResult =>
         val unpickledBatch = unpickle.loads(pickedResult)
         unpickledBatch.asInstanceOf[java.util.ArrayList[Any]].asScala
       }.map { result =>
-        row(0) = EvaluatePython.fromJava(result, udf.dataType)
+        val compositeDataType = StructType(udfs.map{ (udf) => StructField("a", udf.dataType)})
+        val row: InternalRow = EvaluatePythonUtils.fromJava(
+          result,
+          compositeDataType
+        ).asInstanceOf[InternalRow]
         joined(queue.poll(), row)
       }
     }

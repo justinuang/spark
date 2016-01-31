@@ -65,7 +65,7 @@ private[spark] class PythonRDD(
 
   override def compute(split: Partition, context: TaskContext): Iterator[Array[Byte]] = {
     val runner = new PythonRunner(
-      command, envVars, pythonIncludes, pythonExec, pythonVer, broadcastVars, accumulator,
+      Seq(command), envVars, pythonIncludes, pythonExec, pythonVer, broadcastVars, accumulator,
       bufferSize, reuse_worker)
     runner.compute(firstParent.iterator(split, context), split.index, context)
   }
@@ -76,7 +76,7 @@ private[spark] class PythonRDD(
  * A helper class to run Python UDFs in Spark.
  */
 private[spark] class PythonRunner(
-    command: Array[Byte],
+    command: Seq[Array[Byte]],
     envVars: JMap[String, String],
     pythonIncludes: JList[String],
     pythonExec: String,
@@ -275,7 +275,10 @@ private[spark] class PythonRunner(
         dataOut.flush()
         // Serialized command:
         dataOut.writeInt(command.length)
-        dataOut.write(command)
+        command.foreach { singleCommand =>
+          dataOut.writeInt(singleCommand.length)
+          dataOut.write(singleCommand)
+        }
         // Data values
         PythonRDD.writeIteratorToStream(inputIterator, dataOut)
         dataOut.writeInt(SpecialLengths.END_OF_DATA_SECTION)

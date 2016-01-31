@@ -19,6 +19,7 @@
 Worker that receives input from Piped RDD.
 """
 from __future__ import print_function
+import itertools
 import os
 import sys
 import time
@@ -95,20 +96,46 @@ def main(infile, outfile):
                 _broadcastRegistry.pop(bid)
 
         _accumulatorRegistry.clear()
-        command = pickleSer._read_with_length(infile)
-        if isinstance(command, Broadcast):
-            command = pickleSer.loads(command.value)
-        func, profiler, deserializer, serializer = command
+        num_commands = read_int(infile)
+
+        commands = []
+        for i in xrange(num_commands):
+            command = pickleSer._read_with_length(infile)
+            if isinstance(command, Broadcast):
+                command = pickleSer.loads(command.value)
+
+            commands.append(command)
+
+        first_command = commands[0]
+        func, profiler, deserializer, serializer = first_command
         init_time = time.time()
 
-        def process():
+        class MyObject(object):
+            def __init__(self):
+                pass
+
+        def process(deserializer):
             iterator = deserializer.load_stream(infile)
-            serializer.dump_stream(func(split_index, iterator), outfile)
+
+            splitted_iterators = itertools.tee(iterator, len(commands))
+            selected_iterators = [map(lambda x: x[i], iterator) for i, iterator in enumerate(splitted_iterators)]
+
+            transformed_iterators = []
+
+            for i in xrange(len(commands)):
+                func, profiler, deserializer, serializer = commands[i]
+                transformed_iterators.append(
+                    func(split_index, selected_iterators[i])
+                )
+
+            rezipped_iterator = itertools.izip(*transformed_iterators)
+
+            serializer.dump_stream(itertools.izip(*transformed_iterators), outfile)
 
         if profiler:
-            profiler.profile(process)
+            profiler.profile(process) # TODO
         else:
-            process()
+            process(deserializer)
     except Exception:
         try:
             write_int(SpecialLengths.PYTHON_EXCEPTION_THROWN, outfile)

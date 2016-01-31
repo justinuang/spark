@@ -25,6 +25,21 @@ import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.types._
 import scala.collection.mutable.ArrayBuffer
 
+
+/**
+  * Evaluates a [[PythonUDF]], appending the result to the end of the input tuple.
+  */
+case class EvaluatePython( udf: Seq[PythonUDF],
+                           child: LogicalPlan,
+                           resultAttribute: Seq[AttributeReference])
+  extends logical.UnaryNode {
+
+  def output: Seq[Attribute] = child.output ++ resultAttribute
+
+  // References should not include the produced attribute.
+  override def references: AttributeSet = udf.map{_.references}.reduce{(x, y) => x ++ y}
+}
+
 case class Project(projectList: Seq[NamedExpression], child: LogicalPlan) extends UnaryNode {
   override def output: Seq[Attribute] = projectList.map(_.toAttribute)
 

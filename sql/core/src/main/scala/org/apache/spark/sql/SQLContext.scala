@@ -930,7 +930,7 @@ class SQLContext private[sql](
       rdd: RDD[Array[Any]],
       schema: StructType): DataFrame = {
 
-    val rowRdd = rdd.map(r => EvaluatePython.fromJava(r, schema).asInstanceOf[InternalRow])
+    val rowRdd = rdd.map(r => EvaluatePythonUtils.fromJava(r, schema).asInstanceOf[InternalRow])
     DataFrame(this, LogicalRDD(schema.toAttributes, rowRdd)(self))
   }
 

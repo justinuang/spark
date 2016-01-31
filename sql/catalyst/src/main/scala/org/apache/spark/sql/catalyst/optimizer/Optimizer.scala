@@ -51,6 +51,7 @@ object DefaultOptimizer extends Optimizer {
       ColumnPruning,
       // Operator combine
       ProjectCollapsing,
+      //CombinePython,
       CombineFilters,
       CombineLimits,
       // Constant folding
@@ -67,6 +68,18 @@ object DefaultOptimizer extends Optimizer {
       DecimalAggregates) ::
     Batch("LocalRelation", FixedPoint(100),
       ConvertToLocalRelation) :: Nil
+}
+
+object CombinePython extends Rule[LogicalPlan] {
+  override def apply(plan: LogicalPlan): LogicalPlan = plan transformUp {
+    case p @ EvaluatePython(udf1, EvaluatePython(udf2, child, res2), res1) => {
+      EvaluatePython(
+        udf1 ++ udf2,
+        child,
+        res1 ++ res2
+      )
+    }
+  }
 }
 
 /**

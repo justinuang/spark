@@ -27,6 +27,7 @@ import scala.reflect.runtime.universe.TypeTag
 import com.fasterxml.jackson.core.JsonFactory
 import org.apache.commons.lang3.StringUtils
 
+import org.apache.spark.sql.execution.{EvaluatePythonUtils, ExplainCommand, FileRelation, LogicalRDD, QueryExecution, Queryable, SQLExecution}
 import org.apache.spark.annotation.{DeveloperApi, Experimental}
 import org.apache.spark.api.java.JavaRDD
 import org.apache.spark.api.python.PythonRDD
@@ -38,7 +39,6 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.{CatalystTypeConverters, ScalaReflection, SqlParser}
-import org.apache.spark.sql.execution.{EvaluatePython, ExplainCommand, FileRelation, LogicalRDD, QueryExecution, Queryable, SQLExecution}
 import org.apache.spark.sql.execution.datasources.{CreateTableUsingAsSelect, LogicalRelation}
 import org.apache.spark.sql.execution.datasources.json.JacksonGenerator
 import org.apache.spark.sql.sources.HadoopFsRelation
@@ -1769,8 +1769,8 @@ class DataFrame private[sql](
    */
   protected[sql] def javaToPython: JavaRDD[Array[Byte]] = {
     val structType = schema  // capture it for closure
-    val rdd = queryExecution.toRdd.map(EvaluatePython.toJava(_, structType))
-    EvaluatePython.javaToPython(rdd)
+    val rdd = queryExecution.toRdd.map(EvaluatePythonUtils.toJava(_, structType))
+    EvaluatePythonUtils.javaToPython(rdd)
   }
 
   protected[sql] def collectToPython(): Int = {
